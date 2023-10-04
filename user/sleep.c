@@ -19,3 +19,14 @@ int main(int argc, char *argv[]) {
 	}
 	exit(0);
 }
+
+/* 1. int xxx(int); ->  user/user.h
+ * 2. entry("xxx"); -> user/usys.pl
+ * 3. #define SYS_xxx 22 -> kernel/syscall.h
+ * 4. extern uint64 sys_xxx(void); && static uint64  -> [SYS_xxx] sys_xxx,    --> kernel syscall.c
+ * 5. uint64 
+ *    sys_xxx(void){}
+ *
+ *  6.  implement somewhere in kernel e.g. kernel/defs.h */
+
+
