@@ -15,7 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
-
+#include "memlayout.h"
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -302,6 +302,37 @@ create(char *path, short type, short major, short minor)
 }
 
 uint64
+sys_symlink(void)
+{
+  char target[MAXPATH];
+  char path[MAXPATH];
+  struct inode *ip;
+  int n;
+
+  if((n = argstr(0, target, MAXPATH)) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+
+  // create a new symlink, return with a locked inode
+  ip = create(path, T_SYMLINK, 0, 0);
+  if(ip == 0){
+      end_op();
+      return -1;
+  }
+
+  // write the target into the symlink's data block
+  if(writei(ip, 0, (uint64)target, 0, n) != n) {
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
+  return 0;
+}
+
+uint64
 sys_open(void)
 {
   char path[MAXPATH];
@@ -363,7 +394,29 @@ sys_open(void)
   if((omode & O_TRUNC) && ip->type == T_FILE){
     itrunc(ip);
   }
-
+if (ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)) {
+    int tolerate = 10;
+    while (ip->type == T_SYMLINK && tolerate > 0) {
+      if(readi(ip, 0, (uint64)path, 0, ip->size) != ip->size) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      iunlockput(ip);
+      if((ip = namei(path)) == 0) {
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      tolerate--;
+    }
+    // cycle symlink is not allowed
+    if (tolerate == 0) {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
   iunlock(ip);
   end_op();
 
@@ -502,4 +555,66 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+
+uint64
+sys_mmap(void)
+{
+  int i;
+  uint64 addr;
+  int prot, flags, length, offset;
+  struct file *f;
+  struct proc *p = myproc();
+  struct vma *a = 0;
+
+  argaddr(0, &addr);
+  argint(1, &length);
+  argint(2, &prot); 
+  argint(3, &flags);
+  argfd(4, 0, &f);
+  argint(5, &offset);
+
+  if((flags & MAP_SHARED) && !f->writable && (prot & PROT_WRITE))
+    return -1;
+
+  for(i = 0; i < NVMA; i++){
+    if(!p->vmas[i].used){
+      a = &p->vmas[i];
+      break;
+    }
+  }
+
+  if(a == 0) return -1;
+
+  uint64 maxend = VMA_BASE;
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].used && p->vmas[i].end > maxend)
+      maxend = p->vmas[i].end;
+  }
+
+  a->used = 1;
+  a->start = maxend;
+  a->end = PGROUNDUP(a->start + length);
+  a->addr = a->start;
+  a->length = a->end - a->start;
+  a->f = f;
+  a->offset = offset;
+  a->permissions = prot;
+  a->flags = flags;
+
+  filedup(f);
+
+  return a->start;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+
+ argaddr(0, &addr);
+ argint(1, &length);
+  return munmap(addr, length);
 }
